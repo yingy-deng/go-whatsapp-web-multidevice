@@ -36,21 +36,78 @@ func NewStorageRepositoryWithWaDB(db *sql.DB, waDB *sql.DB) domainChatStorage.IC
 	return &SQLiteRepository{db: db, waDB: waDB}
 }
 
-// getFullNameFromWaDB looks up the address-book full_name for a contact JID in the
-// whatsmeow_contacts table.  Returns "" on any error or when no name is found.
-func (r *SQLiteRepository) getFullNameFromWaDB(theirJID string) string {
+// getContactNameFromWaDB resolves the best available display name for a phone-based JID.
+// Priority: address-book full_name > business_name > push_name via LID map > "".
+// theirJID must be in "phone@s.whatsapp.net" form.
+func (r *SQLiteRepository) getContactNameFromWaDB(theirJID string) string {
 	if r.waDB == nil {
 		return ""
 	}
-	var fullName string
-	err := r.waDB.QueryRow(
-		`SELECT COALESCE(full_name, '') FROM whatsmeow_contacts WHERE their_jid = ? AND full_name != '' LIMIT 1`,
-		theirJID,
-	).Scan(&fullName)
-	if err != nil {
-		return ""
+
+	// Get the device owner's JID to filter contacts by our_jid.
+	var ownerJID string
+	_ = r.waDB.QueryRow(`SELECT jid FROM whatsmeow_device LIMIT 1`).Scan(&ownerJID)
+
+	// 1. Address-book full_name or business_name (saved contact)
+	// Filter by our_jid when available to avoid cross-device contamination.
+	var bestName string
+	var query string
+	var args []interface{}
+	if ownerJID != "" {
+		query = `SELECT COALESCE(NULLIF(full_name,''), NULLIF(business_name,''), '')
+			FROM whatsmeow_contacts
+			WHERE their_jid = ? AND our_jid = ?
+			  AND (full_name != '' OR business_name != '')
+			LIMIT 1`
+		args = []interface{}{theirJID, ownerJID}
+	} else {
+		query = `SELECT COALESCE(NULLIF(full_name,''), NULLIF(business_name,''), '')
+			FROM whatsmeow_contacts
+			WHERE their_jid = ?
+			  AND (full_name != '' OR business_name != '')
+			LIMIT 1`
+		args = []interface{}{theirJID}
 	}
-	return fullName
+	err := r.waDB.QueryRow(query, args...).Scan(&bestName)
+	if err == nil && bestName != "" {
+		return bestName
+	}
+
+	// 2. Push name via LID map (unsaved contact whose WhatsApp name is known)
+	// Extract phone number from "phone@s.whatsapp.net"
+	phone := theirJID
+	if idx := len(theirJID) - len("@s.whatsapp.net"); idx > 0 {
+		phone = theirJID[:idx]
+	}
+
+	// Skip LID push_name lookup for the device owner's own phone — their push_name
+	// is their own display name, not a contact name.
+	if ownerJID != "" {
+		ownerPhone := ownerJID
+		if idx := strings.IndexByte(ownerJID, ':'); idx > 0 {
+			ownerPhone = ownerJID[:idx]
+		} else if idx := strings.IndexByte(ownerJID, '@'); idx > 0 {
+			ownerPhone = ownerJID[:idx]
+		}
+		if phone == ownerPhone {
+			return ""
+		}
+	}
+
+	var pushName string
+	err = r.waDB.QueryRow(`
+		SELECT COALESCE(c.push_name, '')
+		FROM whatsmeow_lid_map lm
+		JOIN whatsmeow_contacts c ON c.their_jid = lm.lid || '@lid'
+		WHERE lm.pn = ? AND c.push_name != ''
+		LIMIT 1`,
+		phone,
+	).Scan(&pushName)
+	if err == nil && pushName != "" {
+		return pushName
+	}
+
+	return ""
 }
 
 // StoreChat creates or updates a chat
@@ -203,7 +260,7 @@ func (r *SQLiteRepository) GetChats(filter *domainChatStorage.ChatFilter) ([]*do
 		}
 		// Enrich individual chat names from address book (whatsmeow_contacts.full_name).
 		if strings.HasSuffix(chat.JID, "@s.whatsapp.net") {
-			if fullName := r.getFullNameFromWaDB(chat.JID); fullName != "" {
+			if fullName := r.getContactNameFromWaDB(chat.JID); fullName != "" {
 				chat.Name = fullName
 			}
 		}
@@ -725,11 +782,21 @@ func (r *SQLiteRepository) DeleteDeviceRecord(deviceID string) error {
 
 // GetChatNameWithPushName determines the appropriate name for a chat with pushname support
 func (r *SQLiteRepository) GetChatNameWithPushName(jid types.JID, chatJID string, senderUser string, pushName string) string {
+	// For individual chats, prefer the address-book name from whatsmeow_contacts.
+	if jid.Server != "g.us" && jid.Server != "newsletter" {
+		if fullName := r.getContactNameFromWaDB(jid.ToNonAD().String()); fullName != "" {
+			return fullName
+		}
+	}
+
 	// First, check if chat already exists with a name
 	existingChat, err := r.GetChat(chatJID)
 	if err == nil && existingChat != nil && existingChat.Name != "" {
-		// If we have a pushname and the existing name is just a phone number/JID user, update it
-		if pushName != "" && (existingChat.Name == jid.ToNonAD().User || existingChat.Name == senderUser) {
+		// Only update with pushName when the sender is the contact (incoming).
+		// With senderUser="" (history sync) or when sender is the device owner,
+		// pushName is unreliable — skip it to avoid storing the owner's own name.
+		senderIsContact := senderUser != "" && senderUser == jid.ToNonAD().User
+		if pushName != "" && senderIsContact && (existingChat.Name == jid.ToNonAD().User || existingChat.Name == senderUser) {
 			return pushName
 		}
 		return existingChat.Name
@@ -747,12 +814,13 @@ func (r *SQLiteRepository) GetChatNameWithPushName(jid types.JID, chatJID string
 		// This is a newsletter/channel
 		name = fmt.Sprintf("Newsletter %s", jid.User)
 	default:
-		// This is an individual contact
-		// Priority: pushName > senderUser > JID user
-		if pushName != "" && pushName != senderUser && pushName != jid.ToNonAD().User {
+		// This is an individual contact.
+		// Only use pushName when the sender IS the contact (incoming message).
+		// senderUser="" means history sync — pushName (displayName) can be the
+		// device owner's own name for certain chats, so we skip it.
+		senderIsContact := senderUser != "" && senderUser == jid.ToNonAD().User
+		if pushName != "" && senderIsContact {
 			name = pushName
-		} else if senderUser != "" {
-			name = senderUser
 		} else {
 			name = jid.ToNonAD().User
 		}
@@ -770,7 +838,7 @@ func (r *SQLiteRepository) GetChatNameWithPushNameByDevice(deviceID string, jid 
 
 	// For individual chats, prefer the address-book name from whatsmeow_contacts.
 	if jid.Server != "g.us" && jid.Server != "newsletter" {
-		if fullName := r.getFullNameFromWaDB(jid.ToNonAD().String()); fullName != "" {
+		if fullName := r.getContactNameFromWaDB(jid.ToNonAD().String()); fullName != "" {
 			return fullName
 		}
 	}
@@ -778,8 +846,11 @@ func (r *SQLiteRepository) GetChatNameWithPushNameByDevice(deviceID string, jid 
 	// First, check if chat already exists with a name (device-scoped!)
 	existingChat, err := r.GetChatByDevice(deviceID, chatJID)
 	if err == nil && existingChat != nil && existingChat.Name != "" {
-		// If we have a pushname and the existing name is just a phone number/JID user, update it
-		if pushName != "" && (existingChat.Name == jid.ToNonAD().User || existingChat.Name == senderUser) {
+		// Only update the name with pushName if the sender is the contact themselves
+		// (i.e. incoming message). For outgoing messages, PushName is the device
+		// owner's own name — using it would overwrite the contact's name with ours.
+		senderIsContact := senderUser == jid.ToNonAD().User
+		if pushName != "" && senderIsContact && (existingChat.Name == jid.ToNonAD().User || existingChat.Name == senderUser) {
 			return pushName
 		}
 		return existingChat.Name
@@ -797,12 +868,12 @@ func (r *SQLiteRepository) GetChatNameWithPushNameByDevice(deviceID string, jid 
 		// This is a newsletter/channel
 		name = fmt.Sprintf("Newsletter %s", jid.User)
 	default:
-		// This is an individual contact
-		// Priority: pushName > senderUser > JID user
-		if pushName != "" && pushName != senderUser && pushName != jid.ToNonAD().User {
+		// This is an individual contact.
+		// Only use pushName when the sender IS the contact (incoming message).
+		// For outgoing messages, pushName is the device owner's name, not the contact's.
+		senderIsContact := senderUser == jid.ToNonAD().User
+		if pushName != "" && senderIsContact {
 			name = pushName
-		} else if senderUser != "" {
-			name = senderUser
 		} else {
 			name = jid.ToNonAD().User
 		}
