@@ -162,8 +162,18 @@ func (r *SQLiteRepository) GetChatByDevice(deviceID, jid string) (*domainChatSto
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
+	if err != nil {
+		return nil, err
+	}
 
-	return chat, err
+	// Enrich individual chat name from whatsmeow contacts (same as GetChats)
+	if chat != nil && strings.HasSuffix(chat.JID, "@s.whatsapp.net") {
+		if enriched := r.getContactNameFromWaDB(chat.JID); enriched != "" {
+			chat.Name = enriched
+		}
+	}
+
+	return chat, nil
 }
 
 // GetMessageByID retrieves a message by its ID from any chat
