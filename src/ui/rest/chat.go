@@ -32,6 +32,7 @@ func (controller *Chat) ListChats(c *fiber.Ctx) error {
 	request.Offset = c.QueryInt("offset", 0)
 	request.Search = c.Query("search", "")
 	request.HasMedia = c.QueryBool("has_media", false)
+	request.UnreadOnly = c.QueryBool("unread_only", false)
 	if archivedStr := c.Query("archived"); archivedStr != "" {
 		isArchived := c.QueryBool("archived")
 		request.Archived = &isArchived
