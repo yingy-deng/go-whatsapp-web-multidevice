@@ -369,7 +369,15 @@ func initApp() {
 		logrus.Fatalf("failed to initialize chat storage: %v", err)
 	}
 
-	chatStorageRepo = chatstorage.NewStorageRepository(chatStorageDB)
+	// Open a read-only connection to the whatsmeow DB so the chat storage repo
+	// can resolve address-book contact names from whatsmeow_contacts.full_name.
+	waDB, waDBErr := sql.Open("sqlite3", strings.TrimPrefix(config.DBURI, "file:")+"?mode=ro")
+	if waDBErr != nil {
+		logrus.Warnf("failed to open whatsmeow DB for contact name lookup: %v", waDBErr)
+		chatStorageRepo = chatstorage.NewStorageRepository(chatStorageDB)
+	} else {
+		chatStorageRepo = chatstorage.NewStorageRepositoryWithWaDB(chatStorageDB, waDB)
+	}
 	chatStorageRepo.InitializeSchema()
 
 	whatsappDB := whatsapp.InitWaDB(ctx, config.DBURI)
