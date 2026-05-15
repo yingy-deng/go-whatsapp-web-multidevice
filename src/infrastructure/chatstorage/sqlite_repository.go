@@ -37,34 +37,41 @@ func NewStorageRepositoryWithWaDB(db *sql.DB, waDB *sql.DB) domainChatStorage.IC
 }
 
 // getContactNameFromWaDB resolves the best available display name for a phone-based JID.
-// Priority: address-book full_name > business_name > push_name via LID map > "".
+// Priority: address-book full_name > business_name > direct push_name > push_name via LID map > "".
 // theirJID must be in "phone@s.whatsapp.net" form.
-func (r *SQLiteRepository) getContactNameFromWaDB(theirJID string) string {
+// ownerJID is the requesting device's WhatsApp JID (e.g. "31659344845:23@s.whatsapp.net");
+// pass "" to skip per-device filtering (falls back to LIMIT 1 to avoid cross-device contamination).
+func (r *SQLiteRepository) getContactNameFromWaDB(theirJID, ownerJID string) string {
 	if r.waDB == nil {
 		return ""
 	}
 
-	// Get the device owner's JID to filter contacts by our_jid.
-	var ownerJID string
-	_ = r.waDB.QueryRow(`SELECT jid FROM whatsmeow_device LIMIT 1`).Scan(&ownerJID)
+	// Resolve ownerJID: use the caller-supplied value if available, otherwise fall back
+	// to the first device in whatsmeow_device. In single-device setups LIMIT 1 is fine;
+	// in multi-device setups the caller should always supply ownerJID.
+	if ownerJID == "" {
+		_ = r.waDB.QueryRow(`SELECT jid FROM whatsmeow_device LIMIT 1`).Scan(&ownerJID)
+	}
 
-	// 1. Address-book full_name or business_name (saved contact)
+	// 1. Address-book full_name, business_name, or direct push_name (saved or known contact).
+	// Includes push_name so that unsaved contacts and business accounts with a known
+	// WhatsApp display name are resolved here rather than falling through to the LID map.
 	// Filter by our_jid when available to avoid cross-device contamination.
 	var bestName string
 	var query string
 	var args []interface{}
 	if ownerJID != "" {
-		query = `SELECT COALESCE(NULLIF(full_name,''), NULLIF(business_name,''), '')
+		query = `SELECT COALESCE(NULLIF(full_name,''), NULLIF(business_name,''), NULLIF(push_name,''), '')
 			FROM whatsmeow_contacts
 			WHERE their_jid = ? AND our_jid = ?
-			  AND (full_name != '' OR business_name != '')
+			  AND (full_name != '' OR business_name != '' OR push_name != '')
 			LIMIT 1`
 		args = []interface{}{theirJID, ownerJID}
 	} else {
-		query = `SELECT COALESCE(NULLIF(full_name,''), NULLIF(business_name,''), '')
+		query = `SELECT COALESCE(NULLIF(full_name,''), NULLIF(business_name,''), NULLIF(push_name,''), '')
 			FROM whatsmeow_contacts
 			WHERE their_jid = ?
-			  AND (full_name != '' OR business_name != '')
+			  AND (full_name != '' OR business_name != '' OR push_name != '')
 			LIMIT 1`
 		args = []interface{}{theirJID}
 	}
@@ -166,9 +173,11 @@ func (r *SQLiteRepository) GetChatByDevice(deviceID, jid string) (*domainChatSto
 		return nil, err
 	}
 
-	// Enrich individual chat name from whatsmeow contacts (same as GetChats)
+	// Enrich individual chat name from whatsmeow contacts (same as GetChats).
+	// deviceID here is the GOWA device_id (not a WhatsApp JID), so pass "" to
+	// fall back to LIMIT 1 — GetChatByDevice is called with internal identifiers.
 	if chat != nil && strings.HasSuffix(chat.JID, "@s.whatsapp.net") {
-		if enriched := r.getContactNameFromWaDB(chat.JID); enriched != "" {
+		if enriched := r.getContactNameFromWaDB(chat.JID, ""); enriched != "" {
 			chat.Name = enriched
 		}
 	}
@@ -269,8 +278,10 @@ func (r *SQLiteRepository) GetChats(filter *domainChatStorage.ChatFilter) ([]*do
 			return nil, err
 		}
 		// Enrich individual chat names from address book (whatsmeow_contacts.full_name).
+		// Pass filter.DeviceID (the caller's WhatsApp JID) so we filter contacts by the
+		// correct our_jid in multi-device setups, instead of blindly using LIMIT 1.
 		if strings.HasSuffix(chat.JID, "@s.whatsapp.net") {
-			if fullName := r.getContactNameFromWaDB(chat.JID); fullName != "" {
+			if fullName := r.getContactNameFromWaDB(chat.JID, filter.DeviceID); fullName != "" {
 				chat.Name = fullName
 			}
 		}
@@ -794,7 +805,7 @@ func (r *SQLiteRepository) DeleteDeviceRecord(deviceID string) error {
 func (r *SQLiteRepository) GetChatNameWithPushName(jid types.JID, chatJID string, senderUser string, pushName string) string {
 	// For individual chats, prefer the address-book name from whatsmeow_contacts.
 	if jid.Server != "g.us" && jid.Server != "newsletter" {
-		if fullName := r.getContactNameFromWaDB(jid.ToNonAD().String()); fullName != "" {
+		if fullName := r.getContactNameFromWaDB(jid.ToNonAD().String(), ""); fullName != "" {
 			return fullName
 		}
 	}
@@ -847,8 +858,10 @@ func (r *SQLiteRepository) GetChatNameWithPushNameByDevice(deviceID string, jid 
 	}
 
 	// For individual chats, prefer the address-book name from whatsmeow_contacts.
+	// deviceID here is GOWA's internal device_id, not a WhatsApp JID — pass "" so
+	// getContactNameFromWaDB falls back to LIMIT 1 (acceptable for write paths).
 	if jid.Server != "g.us" && jid.Server != "newsletter" {
-		if fullName := r.getContactNameFromWaDB(jid.ToNonAD().String()); fullName != "" {
+		if fullName := r.getContactNameFromWaDB(jid.ToNonAD().String(), ""); fullName != "" {
 			return fullName
 		}
 	}
