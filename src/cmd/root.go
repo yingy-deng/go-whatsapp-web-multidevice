@@ -371,7 +371,12 @@ func initApp() {
 
 	// Open a read-only connection to the whatsmeow DB so the chat storage repo
 	// can resolve address-book contact names from whatsmeow_contacts.full_name.
-	waDB, waDBErr := sql.Open("sqlite3", strings.TrimPrefix(config.DBURI, "file:")+"?mode=ro")
+	// Strip "file:" prefix and any existing query params to build a clean read-only URI.
+	waDBPath := strings.TrimPrefix(config.DBURI, "file:")
+	if idx := strings.IndexByte(waDBPath, '?'); idx >= 0 {
+		waDBPath = waDBPath[:idx]
+	}
+	waDB, waDBErr := sql.Open("sqlite3", "file:"+waDBPath+"?mode=ro&_foreign_keys=off")
 	if waDBErr != nil {
 		logrus.Warnf("failed to open whatsmeow DB for contact name lookup: %v", waDBErr)
 		chatStorageRepo = chatstorage.NewStorageRepository(chatStorageDB)
