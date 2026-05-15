@@ -201,6 +201,12 @@ func (r *SQLiteRepository) GetChats(filter *domainChatStorage.ChatFilter) ([]*do
 		if err != nil {
 			return nil, err
 		}
+		// Enrich individual chat names from address book (whatsmeow_contacts.full_name).
+		if strings.HasSuffix(chat.JID, "@s.whatsapp.net") {
+			if fullName := r.getFullNameFromWaDB(chat.JID); fullName != "" {
+				chat.Name = fullName
+			}
+		}
 		chats = append(chats, chat)
 	}
 
