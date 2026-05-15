@@ -53,6 +53,12 @@ func (service serviceMessage) MarkAsRead(ctx context.Context, request domainMess
 		return response, err
 	}
 
+	// Reset unread count for this chat now that it has been marked as read
+	deviceID := client.Store.ID.ToNonAD().String()
+	if resetErr := service.chatStorageRepo.ResetUnreadCount(deviceID, dataWaRecipient.String()); resetErr != nil {
+		logrus.Warnf("Failed to reset unread count for chat %s: %v", dataWaRecipient.String(), resetErr)
+	}
+
 	logrus.Info(map[string]any{
 		"phone":      request.Phone,
 		"message_id": request.MessageID,

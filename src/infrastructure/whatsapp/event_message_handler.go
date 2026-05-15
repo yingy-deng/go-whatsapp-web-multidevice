@@ -30,6 +30,18 @@ func handleMessage(ctx context.Context, evt *events.Message, chatStorageRepo dom
 		log.Errorf("Failed to store incoming message %s: %v", evt.Info.ID, err)
 	}
 
+	// Increment unread count for incoming messages (not our own)
+	if !evt.Info.IsFromMe {
+		deviceID := ""
+		if client != nil && client.Store != nil && client.Store.ID != nil {
+			deviceID = client.Store.ID.ToNonAD().String()
+		}
+		chatJID := evt.Info.Chat.String()
+		if err := chatStorageRepo.IncrementUnreadCount(deviceID, chatJID); err != nil {
+			log.Warnf("Failed to increment unread count for chat %s: %v", chatJID, err)
+		}
+	}
+
 	// Handle image message if present
 	handleImageMessage(ctx, evt, client)
 

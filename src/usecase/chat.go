@@ -38,6 +38,7 @@ func (service serviceChat) ListChats(ctx context.Context, request domainChat.Lis
 		SearchName: request.Search,
 		HasMedia:   request.HasMedia,
 		IsArchived: request.Archived,
+		UnreadOnly: request.UnreadOnly,
 	}
 
 	// Get chats from storage
@@ -66,6 +67,7 @@ func (service serviceChat) ListChats(ctx context.Context, request domainChat.Lis
 			CreatedAt:           chat.CreatedAt.Format(time.RFC3339),
 			UpdatedAt:           chat.UpdatedAt.Format(time.RFC3339),
 			Archived:            chat.Archived,
+			UnreadCount:         chat.UnreadCount,
 		}
 		chatInfos = append(chatInfos, chatInfo)
 	}

@@ -70,9 +70,9 @@ func (r *SQLiteRepository) StoreChat(chat *domainChatStorage.Chat) error {
 	rowsAffected, _ := result.RowsAffected()
 	if rowsAffected == 0 {
 		_, err = r.db.Exec(`
-			INSERT INTO chats (jid, device_id, name, last_message_time, ephemeral_expiration, created_at, updated_at, archived)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-		`, chat.JID, chat.DeviceID, chat.Name, chat.LastMessageTime, chat.EphemeralExpiration, now, chat.UpdatedAt, chat.Archived)
+			INSERT INTO chats (jid, device_id, name, last_message_time, ephemeral_expiration, created_at, updated_at, archived, unread_count)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`, chat.JID, chat.DeviceID, chat.Name, chat.LastMessageTime, chat.EphemeralExpiration, now, chat.UpdatedAt, chat.Archived, chat.UnreadCount)
 	}
 	return err
 }
@@ -80,7 +80,7 @@ func (r *SQLiteRepository) StoreChat(chat *domainChatStorage.Chat) error {
 // GetChat retrieves a chat by JID
 func (r *SQLiteRepository) GetChat(jid string) (*domainChatStorage.Chat, error) {
 	query := `
-		SELECT device_id, jid, name, last_message_time, ephemeral_expiration, created_at, updated_at, archived
+		SELECT device_id, jid, name, last_message_time, ephemeral_expiration, created_at, updated_at, archived, COALESCE(unread_count, 0)
 		FROM chats
 		WHERE jid = ?
 	`
@@ -96,7 +96,7 @@ func (r *SQLiteRepository) GetChat(jid string) (*domainChatStorage.Chat, error) 
 // GetChatByDevice retrieves a chat by JID for a specific device
 func (r *SQLiteRepository) GetChatByDevice(deviceID, jid string) (*domainChatStorage.Chat, error) {
 	query := `
-		SELECT device_id, jid, name, last_message_time, ephemeral_expiration, created_at, updated_at, archived
+		SELECT device_id, jid, name, last_message_time, ephemeral_expiration, created_at, updated_at, archived, COALESCE(unread_count, 0)
 		FROM chats
 		WHERE jid = ? AND device_id = ?
 	`
@@ -156,13 +156,17 @@ func (r *SQLiteRepository) buildChatFilterQuery(filter *domainChatStorage.ChatFi
 		}
 	}
 
+	if filter.UnreadOnly {
+		conditions = append(conditions, "COALESCE(c.unread_count, 0) > 0")
+	}
+
 	return joinClause, conditions, args
 }
 
 // GetChats retrieves chats with filtering
 func (r *SQLiteRepository) GetChats(filter *domainChatStorage.ChatFilter) ([]*domainChatStorage.Chat, error) {
 	query := `
-		SELECT c.device_id, c.jid, c.name, c.last_message_time, c.ephemeral_expiration, c.created_at, c.updated_at, c.archived
+		SELECT c.device_id, c.jid, c.name, c.last_message_time, c.ephemeral_expiration, c.created_at, c.updated_at, c.archived, COALESCE(c.unread_count, 0)
 		FROM chats c
 	`
 
@@ -549,9 +553,27 @@ func (r *SQLiteRepository) scanChat(scanner interface{ Scan(...any) error }) (*d
 	chat := &domainChatStorage.Chat{}
 	err := scanner.Scan(
 		&chat.DeviceID, &chat.JID, &chat.Name, &chat.LastMessageTime, &chat.EphemeralExpiration,
-		&chat.CreatedAt, &chat.UpdatedAt, &chat.Archived,
+		&chat.CreatedAt, &chat.UpdatedAt, &chat.Archived, &chat.UnreadCount,
 	)
 	return chat, err
+}
+
+// IncrementUnreadCount increments the unread message counter for a chat.
+func (r *SQLiteRepository) IncrementUnreadCount(deviceID, jid string) error {
+	_, err := r.db.Exec(
+		`UPDATE chats SET unread_count = COALESCE(unread_count, 0) + 1 WHERE jid = ? AND device_id = ?`,
+		jid, deviceID,
+	)
+	return err
+}
+
+// ResetUnreadCount sets the unread counter to zero for a chat (e.g. after MarkRead).
+func (r *SQLiteRepository) ResetUnreadCount(deviceID, jid string) error {
+	_, err := r.db.Exec(
+		`UPDATE chats SET unread_count = 0 WHERE jid = ? AND device_id = ?`,
+		jid, deviceID,
+	)
+	return err
 }
 
 // GetChatMessageCount returns the number of messages in a chat
@@ -1308,5 +1330,8 @@ func (r *SQLiteRepository) getMigrations() []string {
 
 		// Migration 16: JSON metadata for Meta Ads referral/attribution (CTWA)
 		`ALTER TABLE messages ADD COLUMN referral_metadata TEXT DEFAULT ''`,
+
+		// Migration 17: Track unread message count per chat
+		`ALTER TABLE chats ADD COLUMN unread_count INTEGER DEFAULT 0`,
 	}
 }

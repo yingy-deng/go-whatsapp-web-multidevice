@@ -237,6 +237,7 @@ func processConversationMessages(ctx context.Context, data *waHistorySync.Histor
 				Name:                chatName,
 				LastMessageTime:     latestTimestamp,
 				EphemeralExpiration: ephemeralExpiration,
+				UnreadCount:         int(conv.GetUnreadCount()),
 			}
 
 			// Store or update the chat

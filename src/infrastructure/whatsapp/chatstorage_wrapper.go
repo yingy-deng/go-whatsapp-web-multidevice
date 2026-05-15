@@ -184,3 +184,11 @@ func (r *deviceChatStorage) GetDeviceRecord(deviceID string) (*domainChatStorage
 func (r *deviceChatStorage) DeleteDeviceRecord(deviceID string) error {
 	return r.base.DeleteDeviceRecord(deviceID)
 }
+
+func (r *deviceChatStorage) IncrementUnreadCount(deviceID, jid string) error {
+	return r.base.IncrementUnreadCount(deviceID, jid)
+}
+
+func (r *deviceChatStorage) ResetUnreadCount(deviceID, jid string) error {
+	return r.base.ResetUnreadCount(deviceID, jid)
+}

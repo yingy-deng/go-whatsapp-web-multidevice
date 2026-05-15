@@ -39,6 +39,8 @@ type IChatStorageRepository interface {
 	GetFilteredChatCount(filter *ChatFilter) (int64, error)
 	GetChatNameWithPushName(jid types.JID, chatJID string, senderUser string, pushName string) string
 	GetChatNameWithPushNameByDevice(deviceID string, jid types.JID, chatJID string, senderUser string, pushName string) string
+	IncrementUnreadCount(deviceID, jid string) error
+	ResetUnreadCount(deviceID, jid string) error
 	GetStorageStatistics() (chatCount int64, messageCount int64, err error)
 
 	// Cleanup operations
