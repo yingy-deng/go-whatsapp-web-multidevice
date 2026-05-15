@@ -19,12 +19,38 @@ import (
 
 // SQLiteRepository implements Repository using SQLite
 type SQLiteRepository struct {
-	db *sql.DB
+	db   *sql.DB
+	waDB *sql.DB // optional read-only connection to whatsmeow DB for contact name lookup
 }
 
-// NewSQLiteRepository creates a new SQLite repository
+// NewStorageRepository creates a new SQLite repository.
 func NewStorageRepository(db *sql.DB) domainChatStorage.IChatStorageRepository {
 	return &SQLiteRepository{db: db}
+}
+
+// NewStorageRepositoryWithWaDB creates a new SQLite repository with an additional
+// read-only connection to the whatsmeow database so that address-book contact names
+// (whatsmeow_contacts.full_name) can be used when GOWA's chat storage only has a
+// raw phone number.
+func NewStorageRepositoryWithWaDB(db *sql.DB, waDB *sql.DB) domainChatStorage.IChatStorageRepository {
+	return &SQLiteRepository{db: db, waDB: waDB}
+}
+
+// getFullNameFromWaDB looks up the address-book full_name for a contact JID in the
+// whatsmeow_contacts table.  Returns "" on any error or when no name is found.
+func (r *SQLiteRepository) getFullNameFromWaDB(theirJID string) string {
+	if r.waDB == nil {
+		return ""
+	}
+	var fullName string
+	err := r.waDB.QueryRow(
+		`SELECT COALESCE(full_name, '') FROM whatsmeow_contacts WHERE their_jid = ? AND full_name != '' LIMIT 1`,
+		theirJID,
+	).Scan(&fullName)
+	if err != nil {
+		return ""
+	}
+	return fullName
 }
 
 // StoreChat creates or updates a chat
@@ -734,6 +760,13 @@ func (r *SQLiteRepository) GetChatNameWithPushNameByDevice(deviceID string, jid 
 	// Special handling for status@broadcast - always return "Status"
 	if chatJID == "status@broadcast" || jid.String() == "status@broadcast" {
 		return "Status"
+	}
+
+	// For individual chats, prefer the address-book name from whatsmeow_contacts.
+	if jid.Server != "g.us" && jid.Server != "newsletter" {
+		if fullName := r.getFullNameFromWaDB(jid.ToNonAD().String()); fullName != "" {
+			return fullName
+		}
 	}
 
 	// First, check if chat already exists with a name (device-scoped!)
