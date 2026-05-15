@@ -46,27 +46,30 @@ func (r *SQLiteRepository) getContactNameFromWaDB(theirJID, ownerJID string) str
 		return ""
 	}
 
-	// Resolve ownerJID: use the caller-supplied value if available, otherwise fall back
-	// to the first device in whatsmeow_device. In single-device setups LIMIT 1 is fine;
-	// in multi-device setups the caller should always supply ownerJID.
-	if ownerJID == "" {
-		_ = r.waDB.QueryRow(`SELECT jid FROM whatsmeow_device LIMIT 1`).Scan(&ownerJID)
+	// Extract the phone number from ownerJID (e.g. "31659344845:22@s.whatsapp.net" -> "31659344845").
+	// The device-suffix (:XX) changes on each reconnect/re-pair, so we match our_jid by phone
+	// prefix using LIKE to avoid mismatches between the current session JID and the stored JID.
+	ownerPhone := ownerJID
+	if idx := strings.IndexByte(ownerPhone, ':'); idx > 0 {
+		ownerPhone = ownerPhone[:idx]
+	} else if idx := strings.IndexByte(ownerPhone, '@'); idx > 0 {
+		ownerPhone = ownerPhone[:idx]
 	}
 
 	// 1. Address-book full_name, business_name, or direct push_name (saved or known contact).
 	// Includes push_name so that unsaved contacts and business accounts with a known
 	// WhatsApp display name are resolved here rather than falling through to the LID map.
-	// Filter by our_jid when available to avoid cross-device contamination.
+	// Filter by our_jid phone prefix when available to avoid cross-device contamination.
 	var bestName string
 	var query string
 	var args []interface{}
-	if ownerJID != "" {
+	if ownerPhone != "" {
 		query = `SELECT COALESCE(NULLIF(full_name,''), NULLIF(business_name,''), NULLIF(push_name,''), '')
 			FROM whatsmeow_contacts
-			WHERE their_jid = ? AND our_jid = ?
+			WHERE their_jid = ? AND our_jid LIKE ?
 			  AND (full_name != '' OR business_name != '' OR push_name != '')
 			LIMIT 1`
-		args = []interface{}{theirJID, ownerJID}
+		args = []interface{}{theirJID, ownerPhone + "%@s.whatsapp.net"}
 	} else {
 		query = `SELECT COALESCE(NULLIF(full_name,''), NULLIF(business_name,''), NULLIF(push_name,''), '')
 			FROM whatsmeow_contacts
