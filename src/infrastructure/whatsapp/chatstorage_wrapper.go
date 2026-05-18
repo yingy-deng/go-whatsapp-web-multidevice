@@ -173,6 +173,10 @@ func (r *deviceChatStorage) SaveDeviceRecord(record *domainChatStorage.DeviceRec
 	return r.base.SaveDeviceRecord(record)
 }
 
+func (r *deviceChatStorage) UpdateDeviceLastActive(deviceID string) error {
+	return r.base.UpdateDeviceLastActive(deviceID)
+}
+
 func (r *deviceChatStorage) ListDeviceRecords() ([]*domainChatStorage.DeviceRecord, error) {
 	return r.base.ListDeviceRecords()
 }

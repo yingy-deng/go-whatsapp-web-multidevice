@@ -48,6 +48,7 @@ type IChatStorageRepository interface {
 
 	// Device registry operations
 	SaveDeviceRecord(record *DeviceRecord) error
+	UpdateDeviceLastActive(deviceID string) error
 	ListDeviceRecords() ([]*DeviceRecord, error)
 	GetDeviceRecord(deviceID string) (*DeviceRecord, error)
 	DeleteDeviceRecord(deviceID string) error

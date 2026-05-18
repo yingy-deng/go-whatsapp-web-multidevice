@@ -51,11 +51,12 @@ type MediaInfo struct {
 
 // DeviceRecord tracks a registered device for persistence purposes.
 type DeviceRecord struct {
-	DeviceID    string    `db:"device_id"`
-	DisplayName string    `db:"display_name"`
-	JID         string    `db:"jid"`
-	CreatedAt   time.Time `db:"created_at"`
-	UpdatedAt   time.Time `db:"updated_at"`
+	DeviceID     string     `db:"device_id"`
+	DisplayName  string     `db:"display_name"`
+	JID          string     `db:"jid"`
+	CreatedAt    time.Time  `db:"created_at"`
+	UpdatedAt    time.Time  `db:"updated_at"`
+	LastActiveAt *time.Time `db:"last_active_at"` // Updated on connect and on any incoming message
 }
 
 // MessageFilter represents query filters for messages

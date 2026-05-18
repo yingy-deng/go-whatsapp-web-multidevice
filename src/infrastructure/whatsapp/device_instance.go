@@ -20,6 +20,7 @@ type DeviceInstance struct {
 	phoneNumber     string
 	jid             string
 	createdAt       time.Time
+	lastActiveAt    *time.Time
 	onLoggedOut     func(deviceID string) // Callback for remote logout cleanup
 }
 
@@ -90,6 +91,18 @@ func (d *DeviceInstance) JID() string {
 
 func (d *DeviceInstance) CreatedAt() time.Time {
 	return d.createdAt
+}
+
+func (d *DeviceInstance) LastActiveAt() *time.Time {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.lastActiveAt
+}
+
+func (d *DeviceInstance) SetLastActiveAt(t time.Time) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.lastActiveAt = &t
 }
 
 // SetClient attaches a WhatsApp client to this instance and updates metadata.

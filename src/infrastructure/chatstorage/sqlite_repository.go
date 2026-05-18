@@ -17,23 +17,23 @@ import (
 	"go.mau.fi/whatsmeow/types/events"
 )
 
-// SQLiteRepository implements Repository using SQLite
+// SQLiteRepository implements Repository using SQLite or PostgreSQL.
 type SQLiteRepository struct {
-	db   *sql.DB
-	waDB *sql.DB // optional read-only connection to whatsmeow DB for contact name lookup
+	db   *dialectDB
+	waDB *dialectDB // optional read-only connection to whatsmeow DB for contact name lookup
 }
 
-// NewStorageRepository creates a new SQLite repository.
-func NewStorageRepository(db *sql.DB) domainChatStorage.IChatStorageRepository {
-	return &SQLiteRepository{db: db}
+// NewStorageRepository creates a new repository for the given driver ("sqlite3" or "postgres").
+func NewStorageRepository(db *sql.DB, driver string) domainChatStorage.IChatStorageRepository {
+	return &SQLiteRepository{db: newDialectDB(db, driver)}
 }
 
-// NewStorageRepositoryWithWaDB creates a new SQLite repository with an additional
+// NewStorageRepositoryWithWaDB creates a new repository with an additional
 // read-only connection to the whatsmeow database so that address-book contact names
 // (whatsmeow_contacts.full_name) can be used when GOWA's chat storage only has a
 // raw phone number.
-func NewStorageRepositoryWithWaDB(db *sql.DB, waDB *sql.DB) domainChatStorage.IChatStorageRepository {
-	return &SQLiteRepository{db: db, waDB: waDB}
+func NewStorageRepositoryWithWaDB(db *sql.DB, driver string, waDB *sql.DB, waDriver string) domainChatStorage.IChatStorageRepository {
+	return &SQLiteRepository{db: newDialectDB(db, driver), waDB: newDialectDB(waDB, waDriver)}
 }
 
 // getContactNameFromWaDB resolves the best available display name for a phone-based JID.
@@ -730,11 +730,10 @@ func (r *SQLiteRepository) SaveDeviceRecord(record *domainChatStorage.DeviceReco
 	}
 	record.UpdatedAt = now
 
-	// Try update first, then insert if no rows affected (cross-db compatible)
 	result, err := r.db.Exec(`
-		UPDATE devices SET display_name = ?, jid = ?, updated_at = ?
+		UPDATE devices SET display_name = ?, jid = ?, updated_at = ?, last_active_at = ?
 		WHERE device_id = ?
-	`, record.DisplayName, record.JID, record.UpdatedAt, record.DeviceID)
+	`, record.DisplayName, record.JID, now, now, record.DeviceID)
 	if err != nil {
 		return err
 	}
@@ -742,17 +741,30 @@ func (r *SQLiteRepository) SaveDeviceRecord(record *domainChatStorage.DeviceReco
 	rowsAffected, _ := result.RowsAffected()
 	if rowsAffected == 0 {
 		_, err = r.db.Exec(`
-			INSERT INTO devices (device_id, display_name, jid, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?)
-		`, record.DeviceID, record.DisplayName, record.JID, record.CreatedAt, record.UpdatedAt)
+			INSERT INTO devices (device_id, display_name, jid, created_at, updated_at, last_active_at)
+			VALUES (?, ?, ?, ?, ?, ?)
+		`, record.DeviceID, record.DisplayName, record.JID, record.CreatedAt, now, now)
 	}
+	return err
+}
+
+// UpdateDeviceLastActive bumps last_active_at for a device without touching other fields.
+// Called on every incoming message to reflect real usage beyond just the connection time.
+func (r *SQLiteRepository) UpdateDeviceLastActive(deviceID string) error {
+	if strings.TrimSpace(deviceID) == "" {
+		return nil
+	}
+	_, err := r.db.Exec(
+		"UPDATE devices SET last_active_at = ? WHERE device_id = ?",
+		time.Now(), deviceID,
+	)
 	return err
 }
 
 // ListDeviceRecords returns all registered devices.
 func (r *SQLiteRepository) ListDeviceRecords() ([]*domainChatStorage.DeviceRecord, error) {
 	rows, err := r.db.Query(`
-		SELECT device_id, display_name, jid, created_at, updated_at
+		SELECT device_id, display_name, jid, created_at, updated_at, last_active_at
 		FROM devices
 		ORDER BY created_at ASC
 	`)
@@ -764,7 +776,7 @@ func (r *SQLiteRepository) ListDeviceRecords() ([]*domainChatStorage.DeviceRecor
 	var records []*domainChatStorage.DeviceRecord
 	for rows.Next() {
 		var rec domainChatStorage.DeviceRecord
-		if err := rows.Scan(&rec.DeviceID, &rec.DisplayName, &rec.JID, &rec.CreatedAt, &rec.UpdatedAt); err != nil {
+		if err := rows.Scan(&rec.DeviceID, &rec.DisplayName, &rec.JID, &rec.CreatedAt, &rec.UpdatedAt, &rec.LastActiveAt); err != nil {
 			return nil, err
 		}
 		records = append(records, &rec)
@@ -781,11 +793,11 @@ func (r *SQLiteRepository) GetDeviceRecord(deviceID string) (*domainChatStorage.
 
 	rec := &domainChatStorage.DeviceRecord{}
 	err := r.db.QueryRow(`
-		SELECT device_id, display_name, jid, created_at, updated_at
+		SELECT device_id, display_name, jid, created_at, updated_at, last_active_at
 		FROM devices
 		WHERE device_id = ?
 		LIMIT 1
-	`, deviceID).Scan(&rec.DeviceID, &rec.DisplayName, &rec.JID, &rec.CreatedAt, &rec.UpdatedAt)
+	`, deviceID).Scan(&rec.DeviceID, &rec.DisplayName, &rec.JID, &rec.CreatedAt, &rec.UpdatedAt, &rec.LastActiveAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -1322,8 +1334,9 @@ func (r *SQLiteRepository) runMigration(migration string, version int) error {
 }
 
 // getMigrations returns all database migrations
-// Compatible with SQLite, MySQL, and PostgreSQL
+// Compatible with SQLite and PostgreSQL
 func (r *SQLiteRepository) getMigrations() []string {
+	blob := r.db.blobType()
 	return []string{
 		// Migration 1: Create chats table
 		`CREATE TABLE IF NOT EXISTS chats (
@@ -1349,9 +1362,9 @@ func (r *SQLiteRepository) getMigrations() []string {
 			media_type VARCHAR(50),
 			filename VARCHAR(255),
 			url TEXT,
-			media_key BLOB,
-			file_sha256 BLOB,
-			file_enc_sha256 BLOB,
+			media_key ` + blob + `,
+			file_sha256 ` + blob + `,
+			file_enc_sha256 ` + blob + `,
 			file_length INTEGER DEFAULT 0,
 			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 			updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -1405,5 +1418,8 @@ func (r *SQLiteRepository) getMigrations() []string {
 
 		// Migration 16: JSON metadata for Meta Ads referral/attribution (CTWA)
 		`ALTER TABLE messages ADD COLUMN referral_metadata TEXT DEFAULT ''`,
+
+		// Migration 17: Track last activity time per device (updated on connect and incoming messages)
+		`ALTER TABLE devices ADD COLUMN last_active_at TIMESTAMP`,
 	}
 }

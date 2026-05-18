@@ -153,12 +153,13 @@ func convertInstance(inst *whatsapp.DeviceInstance) domainDevice.Device {
 	state := deriveState(inst)
 
 	return domainDevice.Device{
-		ID:          inst.ID(),
-		PhoneNumber: inst.PhoneNumber(),
-		DisplayName: inst.DisplayName(),
-		State:       state,
-		JID:         inst.JID(),
-		CreatedAt:   inst.CreatedAt(),
+		ID:           inst.ID(),
+		PhoneNumber:  inst.PhoneNumber(),
+		DisplayName:  inst.DisplayName(),
+		State:        state,
+		JID:          inst.JID(),
+		CreatedAt:    inst.CreatedAt(),
+		LastActiveAt: inst.LastActiveAt(),
 	}
 }
 

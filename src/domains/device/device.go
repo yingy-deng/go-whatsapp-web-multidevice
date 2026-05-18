@@ -15,10 +15,11 @@ const (
 
 // Device describes a WhatsApp account/device tracked by the system.
 type Device struct {
-	ID          string      `json:"id"`
-	PhoneNumber string      `json:"phone_number,omitempty"`
-	DisplayName string      `json:"display_name,omitempty"`
-	State       DeviceState `json:"state"`
-	JID         string      `json:"jid,omitempty"`
-	CreatedAt   time.Time   `json:"created_at"`
+	ID           string      `json:"id"`
+	PhoneNumber  string      `json:"phone_number,omitempty"`
+	DisplayName  string      `json:"display_name,omitempty"`
+	State        DeviceState `json:"state"`
+	JID          string      `json:"jid,omitempty"`
+	CreatedAt    time.Time   `json:"created_at"`
+	LastActiveAt *time.Time  `json:"last_active_at,omitempty"`
 }

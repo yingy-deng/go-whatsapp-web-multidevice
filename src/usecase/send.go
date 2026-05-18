@@ -63,6 +63,15 @@ func (service serviceSend) wrapSendMessage(ctx context.Context, client *whatsmeo
 		senderJID = client.Store.ID.String()
 	}
 
+	// Update last_active_at on successful send
+	if inst, ok := whatsapp.DeviceFromContext(ctx); ok && inst != nil {
+		now := time.Now()
+		inst.SetLastActiveAt(now)
+		if repo := inst.GetChatStorage(); repo != nil {
+			_ = repo.UpdateDeviceLastActive(inst.ID())
+		}
+	}
+
 	// Store message asynchronously with timeout
 	// Use a goroutine to avoid blocking the send operation
 	go func() {

@@ -45,6 +45,11 @@ func handler(ctx context.Context, instance *DeviceInstance, rawEvt any) {
 		handleStreamReplaced(ctx)
 	case *events.Message:
 		handleMessage(ctx, evt, chatStorageRepo, client)
+		now := time.Now()
+		instance.SetLastActiveAt(now)
+		if chatStorageRepo != nil {
+			_ = chatStorageRepo.UpdateDeviceLastActive(instance.ID())
+		}
 	case *events.Receipt:
 		handleReceipt(ctx, evt, instance.JID(), client)
 	case *events.Archive:
@@ -199,6 +204,8 @@ func handleConnectionEvents(_ context.Context, client *whatsmeow.Client, instanc
 					log.Warnf("Failed to persist device record for %s: %v", instance.ID(), err)
 				}
 			}
+			now := time.Now()
+			instance.SetLastActiveAt(now)
 		}
 	}
 	if len(client.Store.PushName) == 0 {

@@ -112,6 +112,9 @@ func initEnvConfig() {
 	if envDBKEYSURI := viper.GetString("db_keys_uri"); envDBKEYSURI != "" {
 		config.DBKeysURI = envDBKEYSURI
 	}
+	if envChatStorageURI := viper.GetString("chat_storage_uri"); envChatStorageURI != "" {
+		config.ChatStorageURI = envChatStorageURI
+	}
 
 	// WhatsApp settings
 	if envAutoReply := viper.GetString("whatsapp_auto_reply"); envAutoReply != "" {
@@ -325,7 +328,25 @@ func initFlags() {
 	)
 }
 
+func isPostgresURI(uri string) bool {
+	return strings.HasPrefix(uri, "postgres://") || strings.HasPrefix(uri, "postgresql://")
+}
+
 func initChatStorage() (*sql.DB, error) {
+	if isPostgresURI(config.ChatStorageURI) {
+		db, err := sql.Open("postgres", config.ChatStorageURI)
+		if err != nil {
+			return nil, err
+		}
+		db.SetMaxOpenConns(10)
+		db.SetMaxIdleConns(5)
+		if err := db.Ping(); err != nil {
+			db.Close()
+			return nil, fmt.Errorf("failed to ping database: %w", err)
+		}
+		return db, nil
+	}
+
 	connStr := fmt.Sprintf("%s?_journal_mode=WAL&_busy_timeout=5000", config.ChatStorageURI)
 	if config.ChatStorageEnableForeignKeys {
 		connStr += "&_foreign_keys=on"
@@ -369,19 +390,34 @@ func initApp() {
 		logrus.Fatalf("failed to initialize chat storage: %v", err)
 	}
 
+	// Determine drivers for chat storage and whatsmeow DBs.
+	chatDriver := "sqlite3"
+	if isPostgresURI(config.ChatStorageURI) {
+		chatDriver = "postgres"
+	}
+	waDriver := "sqlite3"
+	if isPostgresURI(config.DBURI) {
+		waDriver = "postgres"
+	}
+
 	// Open a read-only connection to the whatsmeow DB so the chat storage repo
 	// can resolve address-book contact names from whatsmeow_contacts.full_name.
-	// Strip "file:" prefix and any existing query params to build a clean read-only URI.
-	waDBPath := strings.TrimPrefix(config.DBURI, "file:")
-	if idx := strings.IndexByte(waDBPath, '?'); idx >= 0 {
-		waDBPath = waDBPath[:idx]
+	var waDB *sql.DB
+	var waDBErr error
+	if isPostgresURI(config.DBURI) {
+		waDB, waDBErr = sql.Open("postgres", config.DBURI)
+	} else {
+		waDBPath := strings.TrimPrefix(config.DBURI, "file:")
+		if idx := strings.IndexByte(waDBPath, '?'); idx >= 0 {
+			waDBPath = waDBPath[:idx]
+		}
+		waDB, waDBErr = sql.Open("sqlite3", "file:"+waDBPath+"?mode=ro&_foreign_keys=off")
 	}
-	waDB, waDBErr := sql.Open("sqlite3", "file:"+waDBPath+"?mode=ro&_foreign_keys=off")
 	if waDBErr != nil {
 		logrus.Warnf("failed to open whatsmeow DB for contact name lookup: %v", waDBErr)
-		chatStorageRepo = chatstorage.NewStorageRepository(chatStorageDB)
+		chatStorageRepo = chatstorage.NewStorageRepository(chatStorageDB, chatDriver)
 	} else {
-		chatStorageRepo = chatstorage.NewStorageRepositoryWithWaDB(chatStorageDB, waDB)
+		chatStorageRepo = chatstorage.NewStorageRepositoryWithWaDB(chatStorageDB, chatDriver, waDB, waDriver)
 	}
 	chatStorageRepo.InitializeSchema()
 
