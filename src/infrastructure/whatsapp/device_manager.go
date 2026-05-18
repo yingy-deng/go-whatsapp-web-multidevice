@@ -496,7 +496,14 @@ func (m *DeviceManager) EnsureClient(ctx context.Context, deviceID string) (*Dev
 	})
 
 	inst.SetOnLoggedOut(func(deviceID string) {
-		m.RemoveDevice(deviceID)
+		// PurgeDevice removes the device from both the whatsmeow store and the
+		// keys store in addition to chatstorage and the in-memory registry.
+		// RemoveDevice only did the latter two, leaving a stale whatsmeow device
+		// that caused "device already exists" / "invalid use of deleted device"
+		// panics on the next connect attempt after a remote logout.
+		if err := m.PurgeDevice(ctx, deviceID); err != nil {
+			logrus.WithError(err).Warnf("[DEVICE_MANAGER] PurgeDevice incomplete for %s after remote logout", deviceID)
+		}
 	})
 
 	inst.SetClient(client)
